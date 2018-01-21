@@ -306,9 +306,7 @@ func printMetricsMeta(service string, list []target) {
 		dstMeta := Meta{Graphs: make(map[string]mackerelplugin.Graphs)}
 		for k, g := range srcMeta.Graphs {
 			k = service + ".#." + k
-			for _, m := range g.Metrics {
-				m.Name = service + ".#." + m.Name
-			}
+			g.Label = fmt.Sprintf("[%s] %s", service, g.Label)
 			dstMeta.Graphs[k] = g
 		}
 
