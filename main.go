@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
@@ -128,7 +129,7 @@ func (c *config) getTargetList() ([]target, error) {
 			}
 		}
 	case "bridge":
-		arnToHost, err := c.createArnAddrMap(desc.Tasks)
+		arnToAddr, err := c.createArnToAddrMap(desc.Tasks)
 		if err != nil {
 			return nil, err
 		}
@@ -138,12 +139,13 @@ func (c *config) getTargetList() ([]target, error) {
 					if container.NetworkBindings != nil {
 						for _, b := range container.NetworkBindings {
 							if aws.Int64Value(b.ContainerPort) == int64(c.port) {
-								addr := arnToHost[aws.StringValue(task.ContainerInstanceArn)]
-								ret = append(ret, target{
-									id:   extractIDFromArn(task.TaskArn),
-									host: addr,
-									port: int(aws.Int64Value(b.HostPort)),
-								})
+								if addr, ok := arnToAddr[aws.StringValue(task.ContainerInstanceArn)]; ok {
+									ret = append(ret, target{
+										id:   extractIDFromArn(task.TaskArn),
+										host: addr,
+										port: int(aws.Int64Value(b.HostPort)),
+									})
+								}
 							}
 						}
 					}
@@ -151,23 +153,24 @@ func (c *config) getTargetList() ([]target, error) {
 			}
 		}
 	case "host":
-		arnToHost, err := c.createArnAddrMap(desc.Tasks)
+		arnToAddr, err := c.createArnToAddrMap(desc.Tasks)
 		if err != nil {
 			return nil, err
 		}
 		for _, task := range desc.Tasks {
-			addr := arnToHost[aws.StringValue(task.ContainerInstanceArn)]
-			ret = append(ret, target{
-				id:   extractIDFromArn(task.TaskArn),
-				host: addr,
-				port: c.port,
-			})
+			if addr, ok := arnToAddr[aws.StringValue(task.ContainerInstanceArn)]; ok {
+				ret = append(ret, target{
+					id:   extractIDFromArn(task.TaskArn),
+					host: addr,
+					port: c.port,
+				})
+			}
 		}
 	}
 	return ret, nil
 }
 
-func (c *config) createArnAddrMap(tasks []*ecs.Task) (map[string]string, error) {
+func (c *config) createArnToAddrMap(tasks []*ecs.Task) (map[string]string, error) {
 	arns := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		arns = append(arns, aws.StringValue(t.ContainerInstanceArn))
@@ -270,47 +273,57 @@ type Meta struct {
 	Graphs map[string]mackerelplugin.Graphs `json:"graphs"`
 }
 
+func getMetricsMeta(t *target) (*Meta, error) {
+	url := fmt.Sprintf("http://%s:%d/", t.host, t.port)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s : %v", url, err)
+		return nil, err
+	}
+
+	req.Header.Set("X-MACKEREL-AGENT-PLUGIN-META", "1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s : %v", url, err)
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "text/json" || res.Header.Get("X-MACKEREL-AGENT-PLUGIN-META") != "1" {
+		fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s", url)
+		return nil, errors.New("invalid responce")
+	}
+
+	b, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s : %v", url, err)
+		return nil, err
+	}
+	meta := &Meta{}
+	err = json.Unmarshal(b, meta)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "recieved invalid metrics meta from %s : %v", url, err)
+		return nil, err
+	}
+	return meta, nil
+
+}
+
 func printMetricsMeta(service string, list []target) {
 	fmt.Println("# mackerel-agent-plugin")
 
 	for _, t := range list {
-		url := fmt.Sprintf("http://%s:%d/", t.host, t.port)
-		req, err := http.NewRequest(http.MethodGet, url, nil)
+		srcMeta, err := getMetricsMeta(&t)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s : %v", url, err)
 			continue
 		}
 
-		req.Header.Set("X-MACKEREL-AGENT-PLUGIN-META", "1")
-		res, err := http.DefaultClient.Do(req)
-
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s : %v", url, err)
-			continue
-		}
-		defer res.Body.Close()
-		if res.StatusCode != 200 || res.Header.Get("Content-Type") != "text/json" || res.Header.Get("X-MACKEREL-AGENT-PLUGIN-META") != "1" {
-			fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s", url)
-			continue
-		}
-
-		b, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			panic(err)
-		}
-		srcMeta := Meta{}
-		err = json.Unmarshal(b, &srcMeta)
-		if err != nil {
-			panic(err)
-		}
 		dstMeta := Meta{Graphs: make(map[string]mackerelplugin.Graphs)}
 		for k, g := range srcMeta.Graphs {
 			k = service + ".#." + k
 			g.Label = fmt.Sprintf("[%s] %s", service, g.Label)
 			dstMeta.Graphs[k] = g
 		}
-
-		b, err = json.Marshal(&dstMeta)
+		b, err := json.Marshal(&dstMeta)
 		if err != nil {
 			panic(err)
 		}
