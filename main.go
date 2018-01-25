@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 type config struct {
@@ -37,14 +38,19 @@ type target struct {
 	port int
 }
 
+var httpClient = &http.Client{}
+
 func main() {
 	c := config{}
 	flag.StringVar(&c.cluster, "cluster", "default", "ECS cluster name")
 	flag.StringVar(&c.service, "service", "", "ECS service name")
 	flag.StringVar(&c.containerName, "containerName", "", "Container name")
 	flag.IntVar(&c.port, "port", 2018, "Port")
-	flag.StringVar(&c.networkMode, "networkMode", "bridge", "Network mode of the task.")
+	flag.StringVar(&c.networkMode, "networkMode", "bridge", "Network mode of the task")
+	timeout := flag.Int("timeout", 30, "http timeout in seconds")
 	flag.Parse()
+
+	httpClient.Timeout = time.Second * time.Duration(*timeout)
 
 	var err error
 	c.session, err = session.NewSessionWithOptions(session.Options{
@@ -246,7 +252,7 @@ func printMetrics(service string, list []target) {
 			defer wg.Done()
 
 			url := fmt.Sprintf("http://%s:%d/", t.host, t.port)
-			res, err := http.Get(url)
+			res, err := httpClient.Get(url)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "fail to fetch metrics from %s : %v", url, err)
 				return
@@ -282,7 +288,7 @@ func getMetricsMeta(t *target) (*Meta, error) {
 	}
 
 	req.Header.Set("X-MACKEREL-AGENT-PLUGIN-META", "1")
-	res, err := http.DefaultClient.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fail to fetch metrics meta from %s : %v", url, err)
 		return nil, err
