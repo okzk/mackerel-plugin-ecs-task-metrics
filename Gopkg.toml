@@ -22,16 +22,8 @@
 
 [[constraint]]
   name = "github.com/aws/aws-sdk-go"
-  version = "1.12.66"
+  version = "1.12.69"
 
 [[constraint]]
   branch = "master"
   name = "github.com/mackerelio/go-mackerel-plugin-helper"
-
-[[constraint]]
-  branch = "master"
-  name = "github.com/mackerelio/golib"
-
-[[constraint]]
-  name = "github.com/mackerelio/mackerel-agent"
-  version = "0.50.1"
